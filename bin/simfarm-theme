@@ -1,0 +1,113 @@
+#!/usr/bin/env node
+// Read the current Omarchy theme and hand it to the panel.
+//
+//   --print   write the theme as JSON on stdout (the launcher puts it in the URL)
+//   (default) push it into an already-open panel over CDP, so switching themes
+//             on the desktop repaints the panel without reopening it — and,
+//             where the device supports it, flips the simulator between light
+//             and dark to match.
+//
+// Only the neutral roles travel. `accent` is read but deliberately not applied
+// to anything sitting next to the device screen: a saturated colour a few
+// pixels from the UI under test is exactly what makes colour judgements go
+// wrong. It is passed along for the status dot, which is the one place the
+// panel is allowed to be colourful.
+
+import { execFileSync } from "node:child_process";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+const THEMES = join(homedir(), ".config", "omarchy", "themes");
+const STATE = join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "simfarm");
+
+function currentThemeDir() {
+  let name = "";
+  try {
+    name = execFileSync("omarchy", ["theme", "current"], { encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+  // "Osuki Light" is the display name; the directory is its slug.
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  for (const candidate of [slug, slug.replace(/-/g, "")]) {
+    const dir = join(THEMES, candidate);
+    if (existsSync(join(dir, "colors.toml"))) return dir;
+  }
+  return null;
+}
+
+function readTheme() {
+  const dir = currentThemeDir();
+  if (!dir) return null;
+  const toml = readFileSync(join(dir, "colors.toml"), "utf8");
+  const get = (key) => {
+    const m = toml.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]+)"`, "m"));
+    return m ? m[1] : null;
+  };
+  const mode = get("mode") === "light" ? "light" : "dark";
+  return {
+    mode,
+    bg: get("background"),
+    bgAlt: get("lighter_background") ?? get("dark_background"),
+    fg: get("foreground"),
+    fgDim: get("dark_foreground") ?? get("muted"),
+    line: get("muted"),
+    accent: get("accent"),
+    ok: get("green"),
+    warn: get("yellow"),
+    bad: get("red"),
+  };
+}
+
+const theme = readTheme();
+if (!theme) {
+  console.error("simfarm-theme: could not read the current Omarchy theme");
+  process.exit(1);
+}
+
+if (process.argv.includes("--print")) {
+  process.stdout.write(JSON.stringify(theme));
+  process.exit(0);
+}
+
+// --- push into the running panel ---------------------------------------------
+
+const portFile = join(STATE, "debug-port");
+if (!existsSync(portFile)) process.exit(0); // panel was never opened; nothing to update
+const port = readFileSync(portFile, "utf8").trim();
+
+let targets;
+try {
+  targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+} catch {
+  process.exit(0); // panel is closed
+}
+const page = targets.find((t) => t.type === "page" && t.url.includes("127.0.0.1"));
+if (!page) process.exit(0);
+
+const ws = new WebSocket(page.webSocketDebuggerUrl);
+let id = 0;
+const done = new Promise((resolve) => setTimeout(resolve, 3000));
+ws.onopen = () => {
+  // The page owns how a theme is applied; this only hands it the values. If an
+  // older panel has no hook, fall back to setting the custom properties, which
+  // is what the hook does anyway.
+  const expr = `(() => {
+    const t = ${JSON.stringify(theme)};
+    if (typeof window.simfarmApplyTheme === "function") { window.simfarmApplyTheme(t); }
+    else {
+      const s = document.documentElement.style;
+      s.setProperty("--void", t.bg); s.setProperty("--float", t.bgAlt);
+      s.setProperty("--text-bright", t.fg); s.setProperty("--text", t.fgDim);
+      s.setProperty("--hairline", t.line);
+      document.documentElement.dataset.mode = t.mode;
+    }
+    if (typeof window.simfarmSetAppearance === "function") { window.simfarmSetAppearance(t.mode); }
+    return "ok";
+  })()`;
+  ws.send(JSON.stringify({ id: ++id, method: "Runtime.evaluate", params: { expression: expr, returnByValue: true } }));
+};
+ws.onmessage = () => ws.close();
+await done;
+process.exit(0);

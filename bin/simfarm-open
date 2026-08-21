@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Open the simfarm device panel.
+#
+# The panel decodes H.264 with WebCodecs, which browsers only expose on a
+# *secure origin*. Get that wrong and nothing announces it: the socket
+# connects, the server streams, and the picture sits on its first frame.
+#
+# There is more than one way to be secure, so this takes a URL and adapts:
+#
+#   https://...  opened as-is. Tailscale HTTPS, a reverse proxy with a cert,
+#                anything already served over TLS.
+#   http://...   tunnelled over ssh so the panel loads from 127.0.0.1, which
+#                browsers trust. Needs --ssh.
+#
+# It also passes the current Omarchy theme along in the URL, and raises the
+# window instead of opening a second one.
+
+set -euo pipefail
+
+SERVER_URL=""
+SSH_HOST=""
+LOCAL_PORT="8801"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --url) SERVER_URL="${2:-}"; shift 2 ;;
+    --ssh) SSH_HOST="${2:-}"; shift 2 ;;
+    --local-port) LOCAL_PORT="${2:-8801}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+fail() {
+  notify-send -a Simfarm -u critical "Simfarm" "$1" 2>/dev/null || true
+  echo "simfarm-open: $1" >&2
+  exit 1
+}
+
+[ -n "$SERVER_URL" ] || fail "No simfarm URL set. Add one in Setup > Plugins > Simfarm."
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/simfarm"
+PROFILE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/simfarm/browser-profile"
+mkdir -p "$STATE_DIR" "$PROFILE_DIR"
+
+case "$SERVER_URL" in
+  https://*) SCHEME="https" ;;
+  http://*)  SCHEME="http" ;;
+  *) fail "The simfarm URL must start with http:// or https:// - got '$SERVER_URL'" ;;
+esac
+
+# --- reach it ----------------------------------------------------------------
+
+if [ "$SCHEME" = "https" ]; then
+  # Already a secure origin. Nothing to tunnel.
+  PANEL_ORIGIN="${SERVER_URL%/}"
+  PANEL_HOST="${SERVER_URL#https://}"
+  PANEL_HOST="${PANEL_HOST%%/*}"
+  PANEL_HOST="${PANEL_HOST%%:*}"
+else
+  [ -n "$SSH_HOST" ] || fail "A plain http:// URL needs an SSH host to tunnel through, or use an https:// URL."
+
+  TARGET="${SERVER_URL#http://}"
+  TARGET="${TARGET%%/*}"
+  case "$TARGET" in *:*) ;; *) TARGET="${TARGET}:80" ;; esac
+
+  port_is_open() { (exec 3<>"/dev/tcp/127.0.0.1/${LOCAL_PORT}") 2>/dev/null; }
+
+  if ! port_is_open; then
+    # ExitOnForwardFailure so a port already taken by something else fails
+    # loudly here, rather than leaving a tunnel that forwards nowhere.
+    setsid ssh -N \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=30 \
+      -o ServerAliveCountMax=3 \
+      -L "${LOCAL_PORT}:${TARGET}" \
+      "$SSH_HOST" >>"$STATE_DIR/tunnel.log" 2>&1 &
+    echo $! >"$STATE_DIR/tunnel.pid"
+
+    for _ in $(seq 1 40); do
+      port_is_open && break
+      sleep 0.25
+    done
+  fi
+
+  port_is_open || fail "Could not reach ${TARGET} through ${SSH_HOST}. See ${STATE_DIR}/tunnel.log"
+
+  PANEL_ORIGIN="http://127.0.0.1:${LOCAL_PORT}"
+  PANEL_HOST="127.0.0.1"
+fi
+
+# --- theme -------------------------------------------------------------------
+
+THEME_QUERY=""
+if THEME_JSON="$("$(dirname "$0")/simfarm-theme" --print 2>/dev/null)" && [ -n "$THEME_JSON" ]; then
+  THEME_QUERY="?theme=$(printf '%s' "$THEME_JSON" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+fi
+
+# --- window ------------------------------------------------------------------
+
+# Chromium builds an --app window's class from the host of its origin and the
+# profile directory, dropping the port. Naming the profile is what keeps the
+# class ours: on the default profile it would be chrome-<host>__-Default, which
+# every other local web app also answers to, and a window rule written against
+# that would move windows that are none of our business.
+SAFE_HOST="$(printf '%s' "$PANEL_HOST" | tr -c 'A-Za-z0-9.-' '_')"
+WINDOW_CLASS="chrome-${SAFE_HOST}__-Simfarm"
+
+if command -v hyprctl >/dev/null 2>&1; then
+  if hyprctl clients -j 2>/dev/null | grep -q "\"$WINDOW_CLASS\""; then
+    hyprctl dispatch focuswindow "class:${WINDOW_CLASS}" >/dev/null 2>&1 || true
+    exit 0
+  fi
+fi
+
+DEBUG_PORT="$((LOCAL_PORT + 1000))"
+echo "$DEBUG_PORT" >"$STATE_DIR/debug-port"
+echo "$WINDOW_CLASS" >"$STATE_DIR/window-class"
+
+exec setsid uwsm-app -- chromium \
+  --app="${PANEL_ORIGIN}/${THEME_QUERY}" \
+  --user-data-dir="$PROFILE_DIR" \
+  --profile-directory=Simfarm \
+  --remote-debugging-port="$DEBUG_PORT" \
+  >>"$STATE_DIR/browser.log" 2>&1

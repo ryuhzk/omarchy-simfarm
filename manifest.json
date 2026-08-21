@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "id": "ryuhzk.simfarm",
+  "name": "Simfarm",
+  "version": "0.1.0",
+  "author": "ryuhzk",
+  "license": "MIT",
+  "description": "Watch and drive the iOS, Android, and WeChat simulators running on a Mac, from the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "SimfarmWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Simfarm",
+    "description": "Booted simulator count, and a click to open the device panel.",
+    "category": "Development",
+    "allowMultiple": false,
+    "defaults": {
+      "serverUrl": "",
+      "sshHost": "",
+      "localPort": 8801,
+      "refreshIntervalSec": 20
+    },
+    "schema": [
+      {
+        "key": "serverUrl",
+        "type": "string",
+        "label": "Simfarm URL",
+        "defaultValue": "",
+        "description": "Where simfarm is reachable, e.g. https://your-mac.tailnet.ts.net:8801 or http://100.x.y.z:8801. An https:// URL is opened directly. A plain http:// one is tunnelled through the SSH host below, because browsers only enable the video decoder on a secure origin and 127.0.0.1 counts as one."
+      },
+      {
+        "key": "sshHost",
+        "type": "string",
+        "label": "SSH host (only for plain http)",
+        "defaultValue": "",
+        "description": "An ssh target or ~/.ssh/config alias for the Mac, e.g. user@host. Leave empty when the URL above is https."
+      },
+      {
+        "key": "localPort",
+        "type": "integer",
+        "label": "Local port for the tunnel",
+        "min": 1,
+        "max": 65535,
+        "defaultValue": 8801,
+        "description": "This end of the tunnel. Change it if something else already owns 8801. Ignored for https."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 20
+      }
+    ]
+  }
+}

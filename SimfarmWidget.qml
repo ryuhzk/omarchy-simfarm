@@ -1,0 +1,120 @@
+import QtQuick
+import Quickshell
+import Quickshell.Io
+import qs.Ui
+import qs.Commons
+
+BarWidget {
+  id: root
+  moduleName: "ryuhzk.simfarm"
+
+  readonly property string serverUrl: String(setting("serverUrl", "")).trim()
+  readonly property string sshHost: String(setting("sshHost", "")).trim()
+  readonly property int localPort: boundedInt(setting("localPort", 8801), 1, 65535)
+  readonly property int refreshIntervalSec: boundedInt(setting("refreshIntervalSec", 20), 5, 300)
+
+  readonly property bool secureDirect: serverUrl.indexOf("https://") === 0
+  // An https URL is already a secure origin, so it is polled and opened as-is.
+  // A plain http one is tunnelled, and then everything speaks to localhost.
+  readonly property string healthUrl: secureDirect
+    ? serverUrl.replace(/\/$/, "") + "/healthz"
+    : "http://127.0.0.1:" + localPort + "/healthz"
+
+  readonly property bool configured: serverUrl !== "" && (secureDirect || sshHost !== "")
+  readonly property string openerPath: decodeURIComponent(
+    String(Qt.resolvedUrl("bin/simfarm-open")).replace(/^file:\/\//, ""))
+
+  // -1 means "no answer yet or unreachable", which reads differently from a
+  // reachable farm with nothing booted (0). The bar has to tell those apart:
+  // one is a broken link, the other is an idle Mac.
+  property int bootedCount: -1
+  property int deviceCount: 0
+  property string lastError: ""
+
+  function boundedInt(value, minimum, maximum) {
+    var parsed = parseInt(String(value), 10)
+    if (!isFinite(parsed)) parsed = minimum
+    return Math.max(minimum, Math.min(maximum, parsed))
+  }
+
+  function refresh() {
+    if (!configured || healthProc.running) return
+    healthProc.command = ["curl", "--silent", "--max-time", "3", healthUrl]
+    healthProc.running = true
+  }
+
+  Process {
+    id: healthProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var d = JSON.parse(text)
+          root.bootedCount = typeof d.booted === "number" ? d.booted : 0
+          root.deviceCount = typeof d.devices === "number" ? d.devices : 0
+          root.lastError = ""
+        } catch (e) {
+          // No answer on the local port means the tunnel is down, which is the
+          // normal state before the panel has been opened once.
+          root.bootedCount = -1
+          root.lastError = "no answer from " + root.healthUrl
+        }
+      }
+    }
+  }
+
+  Process { id: openProc }
+
+  function openPanel() {
+    if (!configured) return
+    openProc.running = false
+    openProc.command = [openerPath,
+                        "--url", serverUrl,
+                        "--ssh", sshHost,
+                        "--local-port", String(localPort)]
+    openProc.running = true
+    // The tunnel comes up as part of opening, so the next reading is the one
+    // that actually has something to say.
+    reprobe.restart()
+  }
+
+  Timer {
+    id: reprobe
+    interval: 4000
+    onTriggered: root.refresh()
+  }
+
+  Timer {
+    interval: root.refreshIntervalSec * 1000
+    running: root.configured
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.refresh()
+  }
+
+  // Hidden until it is pointed at a Mac — an unconfigured widget has nothing
+  // true to show, and a permanent "—" on the bar is just noise.
+  visible: configured
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
+  WidgetButton {
+    id: button
+    anchors.fill: parent
+    bar: root.bar
+    // Style.bar.iconFont, not font.caption — caption is ~10px, sized for words.
+    // A glyph set at it reads a size smaller than every neighbour on the bar.
+    fontSize: Style.bar.iconFont
+    horizontalMargin: 6
+    // Icon only. The count belongs in the tooltip: a number on the bar invites
+    // you to read it, and how many simulators are booted is not something you
+    // act on at a glance.
+    // U+F10B is the Nerd Font phone glyph. Written as an escape because a raw
+    // private-use character does not reliably survive being edited or copied.
+    text: "\uf10b"
+    tooltipText: root.bootedCount < 0
+      ? ("simfarm — not connected\n" + root.lastError + "\nClick to open the panel")
+      : (root.bootedCount + " booted of " + root.deviceCount + " devices\nClick to open the panel")
+    onPressed: function() { root.openPanel() }
+  }
+}

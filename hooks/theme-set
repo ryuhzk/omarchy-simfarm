@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Runs when the Omarchy theme changes. Repaints an open simfarm panel and, where
+# the attached device supports it, flips the simulator between light and dark to
+# match — so checking a screen in both appearances is one theme switch, not a
+# trip into Settings on the device.
+#
+# Install with:
+#   omarchy hook install theme-set ~/.config/omarchy/plugins/ryuhzk.simfarm/hooks/theme-set
+#
+# Silent by design: the theme changing should never be blocked or made noisy by
+# a panel that happens to be closed.
+exec "$(dirname "$(readlink -f "$0")")/../bin/simfarm-theme" >/dev/null 2>&1
