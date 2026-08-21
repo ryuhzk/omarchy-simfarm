@@ -170,6 +170,13 @@ does not show up.
   sessions with your normal browsing.
 - simfarm itself has no authentication. Reach it over Tailscale or an SSH
   tunnel; do not expose it to a network you do not control.
+- **A tunnel bounds which machines can reach simfarm, not which pages.** It
+  checks no `Origin` and asks for no credentials, so while the tunnel is up, any
+  plain-`http://` page open in any browser on this machine can open the same
+  socket, watch the simulator and type into it. Verified, not theoretical. HTTPS
+  pages cannot — browsers refuse `ws://` from a secure page — so the exposure is
+  plain-HTTP pages and anything able to tamper with one. It is part of why the
+  tunnel now closes with the panel window rather than staying up.
 - The theme bridge opens a Chromium debugging port bound to localhost, used
   only to push theme values into the open panel.
 
