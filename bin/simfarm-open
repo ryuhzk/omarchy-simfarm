@@ -83,16 +83,27 @@ else
 
   port_is_open() { (exec 3<>"/dev/tcp/127.0.0.1/${LOCAL_PORT}") 2>/dev/null; }
 
+  # Set only when this run starts the tunnel. A port that was already open
+  # belongs to someone else — an earlier panel, or something of the user's on
+  # the same port — and taking it down on the way out would be rude.
+  TUNNEL_PID=""
+
   if ! port_is_open; then
+    # Started as an ordinary child, not with setsid: this process supervises the
+    # panel and the tunnel is meant to die with it. `$!` is then the ssh pid
+    # itself, which is what makes the cleanup below possible at all — through
+    # setsid it was the pid of setsid, and the tunnel outlived every panel.
+    #
     # ExitOnForwardFailure so a port already taken by something else fails
     # loudly here, rather than leaving a tunnel that forwards nowhere.
-    setsid ssh -N \
+    ssh -N \
       -o ExitOnForwardFailure=yes \
       -o ServerAliveInterval=30 \
       -o ServerAliveCountMax=3 \
       -L "${LOCAL_PORT}:${TARGET}" \
       -- "$SSH_HOST" >>"$STATE_DIR/tunnel.log" 2>&1 &
-    echo $! >"$STATE_DIR/tunnel.pid"
+    TUNNEL_PID=$!
+    echo "$TUNNEL_PID" >"$STATE_DIR/tunnel.pid"
 
     for _ in $(seq 1 40); do
       port_is_open && break
@@ -134,7 +145,22 @@ DEBUG_PORT="$((LOCAL_PORT + 1000))"
 echo "$DEBUG_PORT" >"$STATE_DIR/debug-port"
 echo "$WINDOW_CLASS" >"$STATE_DIR/window-class"
 
-exec setsid uwsm-app -- chromium \
+# From here on this process is the panel: it stays alive for as long as the
+# window does, and takes the connection down with it. The bar reads this file to
+# decide whether asking the Mac anything is warranted at all — with no window
+# there is nothing to ask on behalf of, and the widget goes quiet instead of
+# polling a machine nobody is looking at.
+echo $$ >"$STATE_DIR/panel.pid"
+cleanup() {
+  # TUNNEL_PID is unset on the https path, where there is no tunnel to take down.
+  if [ -n "${TUNNEL_PID:-}" ]; then kill "$TUNNEL_PID" 2>/dev/null || true; fi
+  rm -f "$STATE_DIR/panel.pid" "$STATE_DIR/tunnel.pid"
+}
+trap cleanup EXIT INT TERM
+
+# Not exec'd, and uwsm-app returns only when the browser does — that return is
+# the signal the window has gone.
+uwsm-app -- chromium \
   --app="${PANEL_ORIGIN}/${THEME_QUERY}" \
   --user-data-dir="$PROFILE_DIR" \
   --profile-directory=Simfarm \

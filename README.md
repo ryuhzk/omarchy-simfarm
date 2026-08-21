@@ -25,8 +25,10 @@ from [simfarm](https://github.com/BANG88/simfarm) running on the Mac.
   connects on selection. A device that is off gets a Start button.
 - The panel wears the current Omarchy theme and follows it when you switch,
   including light and dark on devices that can change appearance.
-- Booted-device count in the bar tooltip; the widget stays quiet until it is
-  pointed at a Mac.
+- Nothing is connected while the panel is closed. The tunnel lives exactly as
+  long as the window, and the widget is a launcher until you open one — no
+  polling a Mac nobody is looking at. Open, the tooltip carries the booted
+  count. The widget stays hidden until it is pointed at a Mac.
 
 ## Requirements
 
@@ -107,6 +109,20 @@ omarchy hook install theme-set ~/.config/omarchy/plugins/ryuhzk.simfarm/hooks/th
 ```
 
 Without it the panel still picks up the theme each time it opens.
+
+## What stays connected
+
+Nothing, once the panel is closed.
+
+Opening the panel starts the ssh tunnel (for a plain `http://` address) and the
+launcher stays alive alongside the window. Close the window and the launcher
+takes the tunnel down with it. While no window is open the bar widget does not
+reach the network at all — it reads a local file, sees there is no panel, and
+says "click to open the panel". The booted count appears in the tooltip only
+while a panel is up.
+
+A tunnel that was already listening on the port when the panel opened is left
+alone on the way out — it belongs to something else.
 
 ## Settings
 
