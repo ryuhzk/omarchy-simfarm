@@ -59,6 +59,24 @@ if [ "$SCHEME" = "https" ]; then
 else
   [ -n "$SSH_HOST" ] || fail "A plain http:// URL needs an SSH host to tunnel through, or use an https:// URL."
 
+  # The host comes from a settings file, and it lands in an argv slot where ssh
+  # would otherwise read it as an option — `-oProxyCommand=...` and friends.
+  # Two independent guards, because either one alone is a single point of
+  # failure: refuse anything that is not shaped like a destination, and pass it
+  # after `--` so ssh stops parsing options regardless.
+  case "$SSH_HOST" in
+    -*) fail "The SSH host must not start with '-' — got '$SSH_HOST'" ;;
+  esac
+  if ! [[ "$SSH_HOST" =~ ^([A-Za-z0-9._-]+@)?([A-Za-z0-9._-]+|\[[0-9A-Fa-f:]+\])$ ]]; then
+    fail "The SSH host must look like 'host' or 'user@host' — got '$SSH_HOST'"
+  fi
+
+  # Used unquoted-ish inside -L and /dev/tcp, so it has to be a number.
+  case "$LOCAL_PORT" in
+    ''|*[!0-9]*) fail "The local port must be a number — got '$LOCAL_PORT'" ;;
+  esac
+  [ "$LOCAL_PORT" -ge 1 ] && [ "$LOCAL_PORT" -le 65535 ] || fail "The local port must be 1-65535 — got '$LOCAL_PORT'"
+
   TARGET="${SERVER_URL#http://}"
   TARGET="${TARGET%%/*}"
   case "$TARGET" in *:*) ;; *) TARGET="${TARGET}:80" ;; esac
@@ -73,7 +91,7 @@ else
       -o ServerAliveInterval=30 \
       -o ServerAliveCountMax=3 \
       -L "${LOCAL_PORT}:${TARGET}" \
-      "$SSH_HOST" >>"$STATE_DIR/tunnel.log" 2>&1 &
+      -- "$SSH_HOST" >>"$STATE_DIR/tunnel.log" 2>&1 &
     echo $! >"$STATE_DIR/tunnel.pid"
 
     for _ in $(seq 1 40); do

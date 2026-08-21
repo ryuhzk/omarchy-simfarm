@@ -27,6 +27,10 @@ BarWidget {
   // -1 means "no answer yet or unreachable", which reads differently from a
   // reachable farm with nothing booted (0). The bar has to tell those apart:
   // one is a broken link, the other is an idle Mac.
+  // Two orders of magnitude above a real /healthz body, and small enough that a
+  // hostile or broken server cannot grow the bar's memory by answering.
+  readonly property int healthByteCap: 65536
+
   property int bootedCount: -1
   property int deviceCount: 0
   property string lastError: ""
@@ -39,7 +43,17 @@ BarWidget {
 
   function refresh() {
     if (!configured || healthProc.running) return
-    healthProc.command = ["curl", "--silent", "--max-time", "3", healthUrl]
+    // /healthz answers with a few dozen bytes of JSON, and this runs on a timer
+    // for as long as the bar is up. StdioCollector accumulates whatever arrives
+    // with no cap of its own, so the cap belongs on the producer: curl refuses a
+    // response that declares itself larger, and head bounds the ones that
+    // declare no size at all. Truncated input fails JSON.parse below and reads
+    // as "no answer", which is the right reading of a server behaving this way.
+    // The URL is passed as a positional argument, never spliced into the script.
+    healthProc.command = ["sh", "-c",
+                          "curl --silent --max-time 3 --max-filesize " + healthByteCap +
+                            " --url \"$1\" | head -c " + healthByteCap,
+                          "sh", healthUrl]
     healthProc.running = true
   }
 
